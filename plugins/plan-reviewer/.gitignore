@@ -1,0 +1,5 @@
+*.log
+.DS_Store
+
+# Uncompressed binaries — only the .gz versions are committed.
+bin/*/plan-reviewer

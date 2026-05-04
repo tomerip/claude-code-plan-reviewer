@@ -1,0 +1,12 @@
+{
+  "name": "plan-reviewer",
+  "version": "0.1.0",
+  "description": "Review Claude plans in the browser with inline comments — intercepts ExitPlanMode and lets you highlight text spans, add feedback, then hands back to Claude to revise.",
+  "author": {
+    "name": "tomerip"
+  },
+  "homepage": "https://github.com/tomerip/claude-code-plan-reviewer",
+  "repository": "https://github.com/tomerip/claude-code-plan-reviewer",
+  "keywords": ["plan", "review", "inline-comments", "plan-mode"],
+  "license": "MIT"
+}

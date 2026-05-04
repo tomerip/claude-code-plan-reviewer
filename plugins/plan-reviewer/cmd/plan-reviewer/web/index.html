@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{THEME}}">
+<head>
+  <meta charset="UTF-8">
+  <title>{{FILENAME}} · plan-reviewer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <aside class="pr-sidebar">
+    <div class="pr-sidebar-header">TOC</div>
+    <nav class="pr-toc">
+      {{TOC_HTML}}
+    </nav>
+  </aside>
+
+  <main class="pr-main">
+    <article class="pr-doc" id="pr-doc">
+      {{PLAN_HTML}}
+    </article>
+  </main>
+
+  <div id="pr-popup" class="pr-popup" hidden>
+    <div class="pr-popup-anchor">on: <span id="pr-popup-anchor-text"></span></div>
+    <textarea id="pr-popup-body" rows="3" placeholder="feedback..."></textarea>
+    <div class="pr-popup-actions">
+      <button id="pr-popup-cancel">[ cancel ]</button>
+      <button id="pr-popup-save">[ save ]  ⌘↩</button>
+    </div>
+  </div>
+
+  <footer class="pr-statusline">
+    <span>plan: <strong>{{FILENAME}}</strong></span>
+    <span class="pr-sep">│</span>
+    <span>comments: <strong id="pr-count">0</strong></span>
+    <span class="pr-sep">│</span>
+    <span>theme: <strong>{{THEME}}</strong></span>
+    <span class="pr-sep">│</span>
+    <span class="pr-actions">
+      <button id="pr-approve" class="pr-btn-approve">[ Approve ]</button>
+      <button id="pr-feedback" class="pr-btn-feedback" disabled>[ Send feedback ]</button>
+    </span>
+  </footer>
+
+  <script>
+    window.__PLAN_PATH = {{PLAN_PATH_JSON}};
+    window.__CSRF_TOKEN = {{CSRF_TOKEN_JSON}};
+  </script>
+  <script src="/app.js"></script>
+</body>
+</html>
