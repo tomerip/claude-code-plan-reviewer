@@ -28,7 +28,7 @@ func main() {
 			fmt.Println("Reads a PreToolUse hook payload on stdin and emits a permission decision on stdout.")
 			return
 		case "--version":
-			fmt.Println("plan-reviewer 0.1.0")
+			fmt.Println("plan-reviewer 0.2.0")
 			return
 		}
 	}

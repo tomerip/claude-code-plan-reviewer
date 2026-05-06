@@ -1,6 +1,6 @@
 {
   "name": "plan-reviewer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Review Claude plans in the browser with inline comments — intercepts ExitPlanMode and lets you highlight text spans, add feedback, then hands back to Claude to revise.",
   "author": {
     "name": "tomerip"
