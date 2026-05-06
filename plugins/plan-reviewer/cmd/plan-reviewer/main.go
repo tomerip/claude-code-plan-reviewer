@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"plan-reviewer/internal/hook"
@@ -28,7 +29,7 @@ func main() {
 			fmt.Println("Reads a PreToolUse hook payload on stdin and emits a permission decision on stdout.")
 			return
 		case "--version":
-			fmt.Println("plan-reviewer 0.2.0")
+			fmt.Println("plan-reviewer 0.3.0")
 			return
 		}
 	}
@@ -138,7 +139,61 @@ func run() error {
 	}
 }
 
+// openMode picks how to surface the review URL to the user.
+//
+//   - modeLocal: ordinary desktop session — hand the URL to the OS's default
+//     browser via `open` / `xdg-open`.
+//   - modeVSCode: running inside a VS Code integrated terminal (most often
+//     via Remote-SSH). VS Code sets $BROWSER to a shim that opens the URL in
+//     the user's local browser and auto-forwards the 127.0.0.1 port through
+//     the existing SSH tunnel, so no user action is needed.
+//   - modeSSHNoIDE: plain SSH without VS Code. We can't reach back to the
+//     client, so we print the URL plus a port-forward hint and let the user
+//     set up their own tunnel.
+type openMode int
+
+const (
+	modeLocal openMode = iota
+	modeVSCode
+	modeSSHNoIDE
+)
+
+func detectOpenMode(getenv func(string) string) openMode {
+	if !isSSHSession(getenv) {
+		return modeLocal
+	}
+	if isVSCodeShell(getenv) {
+		return modeVSCode
+	}
+	return modeSSHNoIDE
+}
+
+func isSSHSession(getenv func(string) string) bool {
+	return getenv("SSH_CONNECTION") != "" || getenv("SSH_TTY") != "" || getenv("SSH_CLIENT") != ""
+}
+
+// isVSCodeShell recognizes the VS Code integrated terminal (local or Remote-SSH)
+// via env vars VS Code injects. $VSCODE_INJECTION is the only officially
+// documented signal; the others are de-facto reliable but undocumented, so we
+// check all three to be robust to VS Code internals shifting.
+func isVSCodeShell(getenv func(string) string) bool {
+	return getenv("VSCODE_INJECTION") != "" ||
+		getenv("VSCODE_IPC_HOOK_CLI") != "" ||
+		getenv("TERM_PROGRAM") == "vscode"
+}
+
 func openBrowser(url string) {
+	switch detectOpenMode(os.Getenv) {
+	case modeVSCode:
+		openBrowserVSCode(url)
+	case modeSSHNoIDE:
+		printSSHForwardHint(url)
+	default:
+		openBrowserLocal(url)
+	}
+}
+
+func openBrowserLocal(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -151,5 +206,55 @@ func openBrowser(url string) {
 	}
 	if err := cmd.Start(); err != nil {
 		hook.Logf("failed to open browser: %v", err)
+	}
+}
+
+// openBrowserVSCode tries $BROWSER first (VS Code sets this to a shim that
+// opens the URL in the local browser + auto-forwards the port). If $BROWSER
+// is unset or its invocation fails, fall back to `code --open-url`, which is
+// undocumented but observed to route URLs through the same local-open path.
+func openBrowserVSCode(url string) {
+	if browser := os.Getenv("BROWSER"); browser != "" {
+		if parts := strings.Fields(browser); len(parts) > 0 {
+			args := append(parts[1:], url)
+			err := exec.Command(parts[0], args...).Start()
+			if err == nil {
+				return
+			}
+			hook.Logf("$BROWSER failed (%v); trying `code --open-url`", err)
+		}
+	}
+	if _, err := exec.LookPath("code"); err == nil {
+		if err := exec.Command("code", "--open-url", url).Start(); err == nil {
+			return
+		} else {
+			hook.Logf("`code --open-url` failed: %v", err)
+		}
+	}
+	// Last resort: print the URL + forward hint. VS Code's auto-port-forward
+	// kicks in when the user clicks a localhost URL in the integrated terminal.
+	printSSHForwardHint(url)
+}
+
+// printSSHForwardHint writes the URL and an SSH -L forward hint somewhere
+// the user can see it. Goes to stderr (which Claude Code surfaces as hook
+// output) and to /dev/tty directly (belt-and-braces — guaranteed visibility
+// even if the CLI swallows stderr).
+func printSSHForwardHint(url string) {
+	port := ""
+	if i := strings.LastIndex(url, ":"); i >= 0 {
+		port = url[i+1:]
+	}
+	msg := fmt.Sprintf(
+		"plan-reviewer: running over SSH — open the review UI by forwarding port %s:\n"+
+			"  ssh -O forward -L %s:127.0.0.1:%s <your-ssh-host>   # if ControlMaster is on\n"+
+			"  or add to ~/.ssh/config:  LocalForward %s 127.0.0.1:%s\n"+
+			"Then open %s in your local browser.",
+		port, port, port, port, port, url,
+	)
+	hook.Logf("%s", msg)
+	if f, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
+		fmt.Fprintln(f, msg)
+		_ = f.Close()
 	}
 }
