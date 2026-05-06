@@ -9,19 +9,89 @@
   const popupBody = document.getElementById("pr-popup-body");
   const popupSave = document.getElementById("pr-popup-save");
   const popupCancel = document.getElementById("pr-popup-cancel");
+  const popupDelete = document.getElementById("pr-popup-delete");
   const countEl = document.getElementById("pr-count");
   const approveBtn = document.getElementById("pr-approve");
   const feedbackBtn = document.getElementById("pr-feedback");
 
-  let pendingSelection = null; // {range, anchorText, lineStart, lineEnd}
+  // popupState holds the work-in-progress: either a brand-new selection
+  // waiting to be saved, or an existing comment being edited.
+  //   new:  { mode: "new",  range, anchorText, lineStart, lineEnd }
+  //   edit: { mode: "edit", id }
+  let popupState = null;
+
+  function makeCommentId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return "c-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  function findCommentById(id) {
+    return comments.find((c) => c.id === id) || null;
+  }
+
+  function findAnchoredSpan(id) {
+    return doc.querySelector('.pr-anchored[data-comment-id="' + id + '"]');
+  }
 
   // ----- text selection → popup -----
+  //
+  // We track mousedown to distinguish a click-on-highlight (open edit) from
+  // a drag that happens to start inside a highlight (start a new selection,
+  // existing behavior). A move of more than a few pixels between mousedown
+  // and mouseup counts as a drag.
 
-  doc.addEventListener("mouseup", function () {
-    setTimeout(handleSelection, 0);
+  const CLICK_SLOP_PX = 4;
+  let mouseDownAt = null;
+
+  doc.addEventListener("mousedown", function (e) {
+    mouseDownAt = { x: e.clientX, y: e.clientY, target: e.target };
   });
 
-  function handleSelection() {
+  doc.addEventListener("mouseup", function (e) {
+    const down = mouseDownAt;
+    mouseDownAt = null;
+    // Defer one tick so the selection object is settled.
+    setTimeout(() => handleMouseUp(e, down), 0);
+  });
+
+  function handleMouseUp(e, down) {
+    // If the user didn't move much and ended on an existing highlight,
+    // treat it as a click-to-edit.
+    if (down) {
+      const dx = Math.abs(e.clientX - down.x);
+      const dy = Math.abs(e.clientY - down.y);
+      if (dx <= CLICK_SLOP_PX && dy <= CLICK_SLOP_PX) {
+        const span = findAnchoredAncestor(e.target);
+        if (span) {
+          // Clear any accidental caret-click selection so the popup doesn't
+          // also try to treat this as a new-selection event.
+          const sel = window.getSelection();
+          if (sel) sel.removeAllRanges();
+          openEditPopup(span);
+          return;
+        }
+      }
+    }
+    handleNewSelection();
+  }
+
+  function findAnchoredAncestor(node) {
+    while (node && node !== doc) {
+      if (
+        node.nodeType === 1 &&
+        node.classList &&
+        node.classList.contains("pr-anchored")
+      ) {
+        return node;
+      }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function handleNewSelection() {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
 
@@ -43,7 +113,8 @@
       10
     );
 
-    pendingSelection = {
+    popupState = {
+      mode: "new",
       range: range.cloneRange(),
       anchorText: text,
       lineStart,
@@ -51,7 +122,8 @@
     };
 
     const rect = range.getBoundingClientRect();
-    showPopup(rect, text);
+    showPopup(rect, text, "");
+    popupDelete.hidden = true;
   }
 
   function findBlock(node) {
@@ -64,12 +136,13 @@
     return null;
   }
 
-  function showPopup(rect, anchorText) {
+  function showPopup(rect, anchorText, bodyValue) {
     popup.hidden = false;
     popupAnchorText.textContent =
       anchorText.length > 60 ? anchorText.slice(0, 60) + "…" : anchorText;
-    popupBody.value = "";
+    popupBody.value = bodyValue || "";
 
+    // Render once hidden=false so offsetWidth is real.
     const top = window.scrollY + rect.bottom + 6;
     const left = Math.min(
       window.scrollX + rect.left,
@@ -79,47 +152,82 @@
     popup.style.left = Math.max(left, 10) + "px";
 
     popupBody.focus();
+    // Put cursor at end for edit mode so the user can append easily.
+    const len = popupBody.value.length;
+    popupBody.setSelectionRange(len, len);
   }
 
   function hidePopup() {
     popup.hidden = true;
-    pendingSelection = null;
-    window.getSelection().removeAllRanges();
+    popupDelete.hidden = true;
+    popupState = null;
+    const sel = window.getSelection();
+    if (sel) sel.removeAllRanges();
+  }
+
+  function openEditPopup(span) {
+    const id = span.dataset.commentId;
+    const c = findCommentById(id);
+    if (!c) return; // Stale span (shouldn't happen but don't crash).
+
+    popupState = { mode: "edit", id };
+
+    const rect = span.getBoundingClientRect();
+    showPopup(rect, c.anchorText, c.body);
+    popupDelete.hidden = false;
   }
 
   popupCancel.addEventListener("click", hidePopup);
-
-  popupSave.addEventListener("click", saveComment);
+  popupSave.addEventListener("click", savePopup);
+  popupDelete.addEventListener("click", deleteFromPopup);
 
   popupBody.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
-      saveComment();
+      savePopup();
     } else if (e.key === "Escape") {
       e.preventDefault();
       hidePopup();
     }
   });
 
-  function saveComment() {
-    const body = popupBody.value.trim();
-    if (!body || !pendingSelection) {
+  function savePopup() {
+    if (!popupState) {
       hidePopup();
       return;
     }
-    const { range, anchorText, lineStart, lineEnd } = pendingSelection;
+    if (popupState.mode === "edit") {
+      updateComment(popupState.id);
+    } else {
+      createComment();
+    }
+  }
+
+  function createComment() {
+    const body = popupBody.value.trim();
+    if (!body || !popupState || popupState.mode !== "new") {
+      hidePopup();
+      return;
+    }
+    const { range, anchorText, lineStart, lineEnd } = popupState;
+    const id = makeCommentId();
 
     // Wrap selection in a highlight span (best-effort — single range).
+    // If the selection crosses element boundaries surroundContents throws;
+    // we keep the comment in that case but it won't be clickable to edit.
+    // Fixing that is tracked as the "orphan comment list" deferred item.
     try {
       const wrap = document.createElement("span");
       wrap.className = "pr-anchored";
+      wrap.dataset.commentId = id;
       wrap.title = "feedback: " + body;
       range.surroundContents(wrap);
     } catch (err) {
-      // Selection crosses element boundaries; skip highlight but keep the comment.
+      // no highlight; comment is still submitted.
     }
 
     comments.push({
+      id,
       anchorText,
       lineStart: lineStart || 1,
       lineEnd: lineEnd || lineStart || 1,
@@ -128,6 +236,45 @@
 
     updateCount();
     hidePopup();
+  }
+
+  function updateComment(id) {
+    const c = findCommentById(id);
+    if (!c) {
+      hidePopup();
+      return;
+    }
+    const body = popupBody.value.trim();
+    if (!body) {
+      // Empty body on edit = delete, matches the affordance of "clear and save".
+      deleteComment(id);
+      hidePopup();
+      return;
+    }
+    c.body = body;
+    const span = findAnchoredSpan(id);
+    if (span) span.title = "feedback: " + body;
+    hidePopup();
+  }
+
+  function deleteFromPopup() {
+    if (!popupState || popupState.mode !== "edit") return;
+    deleteComment(popupState.id);
+    hidePopup();
+  }
+
+  function deleteComment(id) {
+    const idx = comments.findIndex((c) => c.id === id);
+    if (idx >= 0) comments.splice(idx, 1);
+    const span = findAnchoredSpan(id);
+    if (span && span.parentNode) {
+      // Unwrap: replace span with its children.
+      const parent = span.parentNode;
+      while (span.firstChild) parent.insertBefore(span.firstChild, span);
+      parent.removeChild(span);
+      parent.normalize();
+    }
+    updateCount();
   }
 
   function updateCount() {

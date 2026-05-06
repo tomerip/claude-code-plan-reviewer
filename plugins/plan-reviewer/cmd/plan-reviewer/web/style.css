@@ -262,7 +262,7 @@ body {
 .pr-anchored {
   background: var(--feedback-bg);
   border-bottom: 1px solid var(--feedback-underline);
-  cursor: help;
+  cursor: pointer;
 }
 
 /* ====== Comment popup ====== */
@@ -308,10 +308,15 @@ body {
 
 .pr-popup-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   margin-top: 6px;
 }
+
+.pr-popup-spacer { flex: 1; }
+
+.pr-popup-delete { color: var(--fg-muted); }
+.pr-popup-delete:hover { color: #c33; }
 
 .pr-popup button {
   background: transparent;
