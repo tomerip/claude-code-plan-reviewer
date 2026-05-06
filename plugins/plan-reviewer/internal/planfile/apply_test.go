@@ -17,26 +17,16 @@ func writeTempPlan(t *testing.T, content string) string {
 	return path
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
 func TestApplyFeedback_SingleAnchor(t *testing.T) {
 	md := "# Title\n\nfirst paragraph.\n\nsecond paragraph.\n"
 	path := writeTempPlan(t, md)
 
-	err := ApplyFeedback(path, []Comment{
+	got, err := ApplyFeedback(path, []Comment{
 		{AnchorText: "first", LineStart: 3, LineEnd: 3, Body: "why?"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := readFile(t, path)
 	if !strings.Contains(got, "> 💬 FEEDBACK: why?") {
 		t.Errorf("feedback not inserted: %s", got)
 	}
@@ -54,7 +44,7 @@ func TestApplyFeedback_MultipleAnchors_ReverseOrder(t *testing.T) {
 
 	// Comments on lines 1, 3, 5 — should be inserted in reverse so earlier
 	// inserts don't shift later anchors.
-	err := ApplyFeedback(path, []Comment{
+	got, err := ApplyFeedback(path, []Comment{
 		{AnchorText: "alpha", LineStart: 1, Body: "A"},
 		{AnchorText: "beta", LineStart: 3, Body: "B"},
 		{AnchorText: "gamma", LineStart: 5, Body: "C"},
@@ -62,7 +52,6 @@ func TestApplyFeedback_MultipleAnchors_ReverseOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := readFile(t, path)
 	for _, want := range []string{"FEEDBACK: A", "FEEDBACK: B", "FEEDBACK: C"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q: %s", want, got)
@@ -80,13 +69,12 @@ func TestApplyFeedback_AnchorNotFound_AppendsEOF(t *testing.T) {
 	md := "only line\n"
 	path := writeTempPlan(t, md)
 
-	err := ApplyFeedback(path, []Comment{
+	got, err := ApplyFeedback(path, []Comment{
 		{AnchorText: "NOTEXIST", LineStart: 99, Body: "orphan"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := readFile(t, path)
 	if !strings.Contains(got, "FEEDBACK: orphan") {
 		t.Errorf("orphan comment not appended: %s", got)
 	}
@@ -98,38 +86,47 @@ func TestApplyFeedback_AnchorNotFound_AppendsEOF(t *testing.T) {
 func TestApplyFeedback_StackedFeedbacks_SingleBlankLine(t *testing.T) {
 	md := "line one\nline two\n"
 	path := writeTempPlan(t, md)
-	err := ApplyFeedback(path, []Comment{
+	got, err := ApplyFeedback(path, []Comment{
 		{AnchorText: "line one", LineStart: 1, Body: "first"},
 		{AnchorText: "line two", LineStart: 2, Body: "second"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := readFile(t, path)
 	// There should never be two consecutive blank lines between feedbacks.
 	if strings.Contains(got, "\n\n\n") {
 		t.Errorf("unexpected double blank line:\n%s", got)
 	}
 }
 
-func TestApplyFeedback_RejectsSymlinkWrite(t *testing.T) {
-	dir := t.TempDir()
-	real := filepath.Join(dir, "real.md")
-	if err := os.WriteFile(real, []byte("real content\n"), 0o644); err != nil {
+func TestApplyFeedback_DoesNotWriteToDisk(t *testing.T) {
+	// ExitPlanMode.call() writes updatedInput.plan to the plan file itself.
+	// If ApplyFeedback ALSO writes, the file's mtime gets bumped twice,
+	// past Claude's cached readFileState timestamp — the subsequent Write
+	// during revision fails with "File has been modified since read".
+	md := "one\n\ntwo\n"
+	path := writeTempPlan(t, md)
+	before, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(dir, "link.md")
-	if err := os.Symlink(real, link); err != nil {
-		t.Skip("symlinks not supported in test env")
+	if _, err := ApplyFeedback(path, []Comment{{AnchorText: "one", LineStart: 1, Body: "x"}}); err != nil {
+		t.Fatal(err)
 	}
-
-	err := ApplyFeedback(link, []Comment{{AnchorText: "real", LineStart: 1, Body: "x"}})
-	if err == nil {
-		t.Fatalf("expected error writing through symlink, got nil")
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Real file must be untouched.
-	if got := readFile(t, real); got != "real content\n" {
-		t.Errorf("real file modified through symlink: %q", got)
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("plan file mtime changed; ApplyFeedback must be read-only")
+	}
+	// And the file contents must be unchanged.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != md {
+		t.Errorf("plan file content changed; ApplyFeedback must be read-only.\nwant: %q\ngot:  %q", md, string(raw))
 	}
 }
 

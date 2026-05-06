@@ -5,7 +5,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // Comment describes one piece of user feedback anchored to a span of the plan.
@@ -16,16 +15,20 @@ type Comment struct {
 	Body       string `json:"body"`
 }
 
-// ApplyFeedback rewrites planPath in-place, inserting each comment as a
-// blockquote right after the markdown block containing its anchor.
+// ApplyFeedback returns a rewritten version of planPath's contents with each
+// comment inserted as a `> 💬 FEEDBACK:` blockquote right after the markdown
+// block containing its anchor. It does NOT write to disk — the caller is
+// responsible for persisting the result (or shipping it via ExitPlanMode's
+// updatedInput.plan, which is what the plan-reviewer hook does so the plan
+// file's mtime is bumped exactly once, not twice).
 //
 // Anchoring strategy: find the line containing AnchorText nearest to LineStart.
 // Walk forward from that line to the end of the containing block (blank line or EOF),
 // then insert the feedback blockquote after that line with a surrounding blank line.
-func ApplyFeedback(planPath string, comments []Comment) error {
+func ApplyFeedback(planPath string, comments []Comment) (string, error) {
 	raw, err := os.ReadFile(planPath)
 	if err != nil {
-		return fmt.Errorf("read plan: %w", err)
+		return "", fmt.Errorf("read plan: %w", err)
 	}
 	lines := strings.Split(string(raw), "\n")
 
@@ -46,25 +49,7 @@ func ApplyFeedback(planPath string, comments []Comment) error {
 		lines = appendFeedback(lines, end, c.Body, c.AnchorText)
 	}
 
-	out := strings.Join(lines, "\n")
-	if err := writeNoFollow(planPath, []byte(out)); err != nil {
-		return fmt.Errorf("write plan: %w", err)
-	}
-	return nil
-}
-
-// writeNoFollow refuses to write through a symlink. Complements the
-// plansDir containment check in discover.go as defense-in-depth.
-func writeNoFollow(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	return nil
+	return strings.Join(lines, "\n"), nil
 }
 
 func findAnchor(lines []string, c Comment) int {

@@ -22,9 +22,14 @@ type output struct {
 }
 
 type hookSpecific struct {
-	HookEventName            string `json:"hookEventName"`
-	PermissionDecision       string `json:"permissionDecision"`
-	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
+	HookEventName            string          `json:"hookEventName"`
+	PermissionDecision       string          `json:"permissionDecision"`
+	PermissionDecisionReason string          `json:"permissionDecisionReason,omitempty"`
+	AdditionalContext        string          `json:"additionalContext,omitempty"`
+	// Pointer so we can send `{}` (non-nil, empty) when the tool was called
+	// with no args — without the pointer, `omitempty` would drop an empty
+	// map, and the CLI's bypass check looks for *presence*, not content.
+	UpdatedInput *map[string]any `json:"updatedInput,omitempty"`
 }
 
 func Read(r io.Reader) (*Input, error) {
@@ -46,6 +51,33 @@ func WriteAllow(w io.Writer) error {
 	return write(w, output{HookSpecificOutput: hookSpecific{
 		HookEventName:      "PreToolUse",
 		PermissionDecision: "allow",
+	}})
+}
+
+func WriteAllowWithContext(w io.Writer, additionalContext string) error {
+	return write(w, output{HookSpecificOutput: hookSpecific{
+		HookEventName:      "PreToolUse",
+		PermissionDecision: "allow",
+		AdditionalContext:  additionalContext,
+	}})
+}
+
+// WriteAllowSatisfiesInteraction bypasses the tool's built-in user-interaction
+// dialog (e.g. ExitPlanMode's approve/reject prompt). When `updatedInput` is
+// present on an `allow` response AND the tool declares requiresUserInteraction,
+// Claude Code treats the hook as having already handled user interaction —
+// see the "Hook satisfied user interaction for ... via updatedInput" path in
+// the CLI bundle. `updatedInput` must be a valid input object for the target
+// tool; passing the original input unchanged is fine and is what we want here.
+func WriteAllowSatisfiesInteraction(w io.Writer, toolInput map[string]any, additionalContext string) error {
+	if toolInput == nil {
+		toolInput = map[string]any{}
+	}
+	return write(w, output{HookSpecificOutput: hookSpecific{
+		HookEventName:      "PreToolUse",
+		PermissionDecision: "allow",
+		AdditionalContext:  additionalContext,
+		UpdatedInput:       &toolInput,
 	}})
 }
 

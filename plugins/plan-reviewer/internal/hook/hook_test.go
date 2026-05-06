@@ -83,6 +83,79 @@ func TestWriteDeny(t *testing.T) {
 	}
 }
 
+func TestWriteAllowSatisfiesInteraction(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteAllowSatisfiesInteraction(&buf, map[string]any{"plan": "p"}, "revise please"); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		HookSpecificOutput struct {
+			HookEventName      string         `json:"hookEventName"`
+			PermissionDecision string         `json:"permissionDecision"`
+			AdditionalContext  string         `json:"additionalContext"`
+			UpdatedInput       map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("wrong decision: %+v", parsed)
+	}
+	if parsed.HookSpecificOutput.AdditionalContext != "revise please" {
+		t.Errorf("wrong additionalContext: %+v", parsed)
+	}
+	if parsed.HookSpecificOutput.UpdatedInput == nil {
+		t.Errorf("updatedInput missing — without it the CLI does not bypass requiresUserInteraction")
+	}
+	if parsed.HookSpecificOutput.UpdatedInput["plan"] != "p" {
+		t.Errorf("updatedInput should echo tool input: %+v", parsed.HookSpecificOutput.UpdatedInput)
+	}
+}
+
+func TestWriteAllowSatisfiesInteraction_NilInput(t *testing.T) {
+	// Nil input must still serialize a non-null updatedInput (the CLI's
+	// bypass triggers on "!== undefined", not on content).
+	var buf bytes.Buffer
+	if err := WriteAllowSatisfiesInteraction(&buf, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		HookSpecificOutput struct {
+			UpdatedInput map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.HookSpecificOutput.UpdatedInput == nil {
+		t.Errorf("updatedInput should be an object, not null/absent, even for nil input")
+	}
+}
+
+func TestWriteAllowWithContext(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteAllowWithContext(&buf, "re-read and revise"); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		HookSpecificOutput struct {
+			HookEventName      string `json:"hookEventName"`
+			PermissionDecision string `json:"permissionDecision"`
+			AdditionalContext  string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("wrong decision: %+v", parsed)
+	}
+	if parsed.HookSpecificOutput.AdditionalContext != "re-read and revise" {
+		t.Errorf("wrong additionalContext: %+v", parsed)
+	}
+}
+
 func TestWriteAsk(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WriteAsk(&buf, "not sure"); err != nil {

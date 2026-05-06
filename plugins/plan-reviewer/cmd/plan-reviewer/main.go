@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -57,10 +58,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("read plan: %w", err)
 	}
-	initialStat, err := os.Stat(planPath)
-	if err != nil {
-		return fmt.Errorf("stat plan: %w", err)
-	}
 
 	srv, err := server.Start(
 		server.Assets{FS: assetsFS},
@@ -94,18 +91,45 @@ func run() error {
 	case server.ActionApprove:
 		return hook.WriteAllow(os.Stdout)
 	case server.ActionFeedback:
-		// Warn if the plan was modified while the browser was open. Anchors may
-		// not line up with the current content, in which case ApplyFeedback's
-		// fallback silently appends to EOF. We still write — losing the feedback
-		// is worse than a noisy warning.
-		if cur, err := os.Stat(planPath); err == nil && !cur.ModTime().Equal(initialStat.ModTime()) {
-			hook.Logf("warning: plan file mtime changed during review; anchors may drift")
-		}
-		if err := planfile.ApplyFeedback(planPath, result.Comments); err != nil {
+		// Return `allow` + `updatedInput` (plus additionalContext) rather than
+		// `deny`. Two properties of Claude Code's PreToolUse pipeline combine
+		// to give us what we want:
+		//
+		//   1. `deny` triggers the red "Permission denied by hook" chrome,
+		//      which misframes a revision request as a failure.
+		//   2. `allow` alone lets ExitPlanMode's native approve/reject dialog
+		//      show up because the tool declares requiresUserInteraction().
+		//      But if `updatedInput` is present on an allow, the CLI logs
+		//      "Hook satisfied user interaction for ... via updatedInput"
+		//      and skips the tool's own dialog entirely.
+		//
+		// ExitPlanMode.call() writes updatedInput.plan back to the plan file
+		// itself, so we compute the annotated plan in memory and ship it via
+		// updatedInput — without a separate disk write from our side. Two
+		// writes (ours + ExitPlanMode's) would bump the plan file's mtime
+		// past Claude's cached readFileState timestamp, which would make the
+		// subsequent Write during revision fail with "File has been modified
+		// since read" / "Error writing file".
+		annotated, err := planfile.ApplyFeedback(planPath, result.Comments)
+		if err != nil {
 			return err
 		}
-		reason := "Review complete — user requested revisions. Re-read the plan file, address each `> 💬 FEEDBACK:` annotation, remove the FEEDBACK blockquotes, then call ExitPlanMode again."
-		return hook.WriteDeny(os.Stdout, reason)
+		var toolInput map[string]any
+		if len(in.ToolInput) > 0 {
+			_ = json.Unmarshal(in.ToolInput, &toolInput)
+		}
+		if toolInput == nil {
+			toolInput = map[string]any{}
+		}
+		toolInput["plan"] = annotated
+		ctx := fmt.Sprintf(
+			"The user reviewed this plan and requested revisions rather than approving it outright. "+
+				"Inline feedback has been written to %s as `> 💬 FEEDBACK:` blockquotes. "+
+				"Re-enter plan mode, re-read that file, address each FEEDBACK annotation, "+
+				"remove the FEEDBACK blockquotes, then call ExitPlanMode again with the revised plan.",
+			planPath,
+		)
+		return hook.WriteAllowSatisfiesInteraction(os.Stdout, toolInput, ctx)
 	case server.ActionCancel:
 		// Browser was closed (pagehide sendBeacon, or heartbeat stopped).
 		// Degrade to Claude Code's default approval flow so the user isn't

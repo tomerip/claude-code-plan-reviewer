@@ -238,6 +238,8 @@ func TestE2E_Feedback(t *testing.T) {
 	binPath, planPath, _, hookInput, cleanup := e2eSetup(t)
 	defer cleanup()
 
+	origPlan, _ := os.ReadFile(planPath)
+
 	_, port, stdoutBuf, done := runBinary(t, binPath, hookInput)
 	token := fetchCSRF(t, port)
 	submit(t, port, token, `{"action":"feedback","comments":[{"anchorText":"Fastapi","lineStart":3,"lineEnd":3,"body":"why not flask"}]}`)
@@ -253,27 +255,45 @@ func TestE2E_Feedback(t *testing.T) {
 
 	var parsed struct {
 		HookSpecificOutput struct {
-			PermissionDecision       string `json:"permissionDecision"`
-			PermissionDecisionReason string `json:"permissionDecisionReason"`
+			PermissionDecision string         `json:"permissionDecision"`
+			AdditionalContext  string         `json:"additionalContext"`
+			UpdatedInput       map[string]any `json:"updatedInput"`
 		} `json:"hookSpecificOutput"`
 	}
 	if err := json.Unmarshal([]byte(stdoutBuf.String()), &parsed); err != nil {
 		t.Fatalf("stdout is not JSON: %s", stdoutBuf.String())
 	}
-	if parsed.HookSpecificOutput.PermissionDecision != "deny" {
-		t.Errorf("want deny, got %s", parsed.HookSpecificOutput.PermissionDecision)
+	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("want allow, got %s", parsed.HookSpecificOutput.PermissionDecision)
 	}
-	if !strings.Contains(parsed.HookSpecificOutput.PermissionDecisionReason, "FEEDBACK") {
-		t.Errorf("reason should mention FEEDBACK: %s", parsed.HookSpecificOutput.PermissionDecisionReason)
+	if !strings.Contains(parsed.HookSpecificOutput.AdditionalContext, "FEEDBACK") {
+		t.Errorf("additionalContext should mention FEEDBACK: %s", parsed.HookSpecificOutput.AdditionalContext)
+	}
+	if !strings.Contains(parsed.HookSpecificOutput.AdditionalContext, "ExitPlanMode") {
+		t.Errorf("additionalContext should tell Claude to call ExitPlanMode again: %s", parsed.HookSpecificOutput.AdditionalContext)
+	}
+	// updatedInput must be present so the CLI bypasses ExitPlanMode's native
+	// approve/reject dialog (the "Hook satisfied user interaction" path).
+	if parsed.HookSpecificOutput.UpdatedInput == nil {
+		t.Errorf("updatedInput must be present on allow to skip ExitPlanMode's native dialog; stdout: %s", stdoutBuf.String())
+	}
+	// updatedInput.plan must carry the annotated plan — ExitPlanMode.call()
+	// writes it back to disk, so shipping the original plan here would wipe
+	// our FEEDBACK blockquotes.
+	if plan, _ := parsed.HookSpecificOutput.UpdatedInput["plan"].(string); !strings.Contains(plan, "FEEDBACK: why not flask") {
+		t.Errorf("updatedInput.plan must include FEEDBACK annotations (ExitPlanMode writes it back to disk); got: %q", plan)
 	}
 
-	// Plan file must contain the feedback blockquote.
+	// The hook itself must NOT touch the plan file. ExitPlanMode.call() is
+	// the only writer (via updatedInput.plan). A second write from the hook
+	// would bump mtime past Claude's cached readFileState timestamp and
+	// cause "Error writing file" on the subsequent revision Write.
 	after, err := os.ReadFile(planPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(after), "> 💬 FEEDBACK: why not flask") {
-		t.Errorf("feedback not written to plan:\n%s", after)
+	if string(after) != string(origPlan) {
+		t.Errorf("hook must not modify plan file directly — ExitPlanMode persists updatedInput.plan.\nbefore: %q\nafter:  %q", origPlan, after)
 	}
 }
 
