@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func writeTempPlan(t *testing.T, content string) string {
@@ -150,6 +151,28 @@ func TestApplyFeedback_AnchorInHeader_MultilineCollapsed(t *testing.T) {
 	// single spaces so the blockquote header stays on one line.
 	if !strings.Contains(got, `FEEDBACK on "multi line anchor": hm`) {
 		t.Errorf("anchor whitespace not normalized:\n%s", got)
+	}
+}
+
+func TestApplyFeedback_AnchorInHeader_CJKTruncation(t *testing.T) {
+	// Truncation is by rune, not byte. A CJK anchor where the 160-rune
+	// boundary lands between multi-byte code points must not produce an
+	// invalid UTF-8 sequence.
+	md := "placeholder\n"
+	path := writeTempPlan(t, md)
+	anchor := strings.Repeat("日本語", 100) // 300 runes, 900 bytes
+	got, err := ApplyFeedback(path, []Comment{
+		{AnchorText: anchor, LineStart: 1, Body: "y"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("CJK anchor should truncate with ellipsis:\n%s", got)
+	}
+	// Output must be valid UTF-8.
+	if !utf8.ValidString(got) {
+		t.Errorf("truncated CJK output is not valid UTF-8")
 	}
 }
 

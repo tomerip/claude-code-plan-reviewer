@@ -40,6 +40,8 @@ const (
 	ActionApprove  = "approve"
 	ActionFeedback = "feedback"
 	ActionCancel   = "cancel"
+
+	maxSubmitBodyBytes = 1 << 20 // 1 MiB
 )
 
 type Result struct {
@@ -179,6 +181,10 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		Action   string             `json:"action"`
 		Comments []planfile.Comment `json:"comments"`
 	}
+	// Cap the request body so a compromised tab (or a local process that
+	// has scraped the CSRF token) can't pin the process on a multi-GB
+	// upload. 1 MiB is well above any realistic review payload.
+	r.Body = http.MaxBytesReader(w, r.Body, maxSubmitBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

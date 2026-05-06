@@ -2,7 +2,6 @@ package main
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -114,14 +113,13 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		var toolInput map[string]any
-		if len(in.ToolInput) > 0 {
-			_ = json.Unmarshal(in.ToolInput, &toolInput)
-		}
-		if toolInput == nil {
-			toolInput = map[string]any{}
-		}
-		toolInput["plan"] = annotated
+		// Build updatedInput from scratch with only `plan` — never forward
+		// other keys from in.ToolInput. ToolInput is ultimately
+		// model-generated and could be influenced by prompt injection of
+		// the transcript; ExitPlanMode only consumes `plan`, so dropping
+		// everything else keeps us from coupling our safety to internal
+		// CC tool behavior.
+		toolInput := map[string]any{"plan": annotated}
 		ctx := fmt.Sprintf(
 			"The user reviewed this plan and requested revisions rather than approving it outright. "+
 				"Inline feedback has been written to %s as `> 💬 FEEDBACK:` blockquotes. "+

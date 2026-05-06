@@ -32,7 +32,12 @@
   }
 
   function findAnchoredSpan(id) {
-    return doc.querySelector('.pr-anchored[data-comment-id="' + id + '"]');
+    // CSS.escape guards against any non-alnum chars that might leak into
+    // id producers in the future. Current producers (randomUUID and the
+    // base36 fallback) stay inside [a-z0-9-], but don't couple this
+    // selector to that invariant.
+    const safe = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id;
+    return doc.querySelector('.pr-anchored[data-comment-id="' + safe + '"]');
   }
 
   // ----- text selection → popup -----

@@ -297,6 +297,154 @@ func TestE2E_Feedback(t *testing.T) {
 	}
 }
 
+// TestE2E_Feedback_ToolInputWhitelist ensures extra keys on the incoming
+// tool_input (which is ultimately model-generated and therefore attacker-
+// influenced via transcript prompt injection) are NOT forwarded into
+// updatedInput. Only `plan` should appear on the output side.
+func TestE2E_Feedback_ToolInputWhitelist(t *testing.T) {
+	binPath := launcherPath(t)
+
+	home := t.TempDir()
+	plansDir := filepath.Join(home, ".claude", "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(plansDir, "e2e-plan.md")
+	plan := "# Test\n\nFastapi here.\n"
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	transcript := fmt.Sprintf(
+		`{"type":"attachment","attachment":{"type":"plan_mode","planFilePath":"%s","planExists":true}}`+"\n",
+		planPath,
+	)
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// tool_input carries an extra attacker-influenced key alongside `plan`.
+	hookIn := map[string]any{
+		"session_id":      "e2e-whitelist",
+		"transcript_path": transcriptPath,
+		"cwd":             "/tmp",
+		"hook_event_name": "PreToolUse",
+		"tool_name":       "ExitPlanMode",
+		"tool_input": map[string]any{
+			"plan":         "original plan text",
+			"evil_payload": "should not be forwarded",
+			"path":         "/etc/passwd",
+		},
+	}
+	hb, _ := json.Marshal(hookIn)
+	t.Setenv("HOME", home)
+	t.Setenv("PLAN_REVIEWER_NO_BROWSER", "1")
+
+	_, port, stdoutBuf, done := runBinary(t, binPath, string(hb))
+	token := fetchCSRF(t, port)
+	submit(t, port, token, `{"action":"feedback","comments":[{"anchorText":"Fastapi","lineStart":3,"lineEnd":3,"body":"why?"}]}`)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("binary exited with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("binary did not exit within 5s")
+	}
+
+	var parsed struct {
+		HookSpecificOutput struct {
+			PermissionDecision string         `json:"permissionDecision"`
+			UpdatedInput       map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(stdoutBuf.String()), &parsed); err != nil {
+		t.Fatalf("stdout is not JSON: %s", stdoutBuf.String())
+	}
+	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("want allow, got %s", parsed.HookSpecificOutput.PermissionDecision)
+	}
+
+	ui := parsed.HookSpecificOutput.UpdatedInput
+	if _, ok := ui["plan"]; !ok {
+		t.Errorf("updatedInput.plan missing: %v", ui)
+	}
+	for _, banned := range []string{"evil_payload", "path"} {
+		if _, ok := ui[banned]; ok {
+			t.Errorf("updatedInput must not forward %q from tool_input; got %v", banned, ui)
+		}
+	}
+	if len(ui) != 1 {
+		t.Errorf("updatedInput should contain exactly {plan}; got %d keys: %v", len(ui), ui)
+	}
+}
+
+// TestE2E_Feedback_MalformedToolInput covers the hook's handling of a
+// non-object tool_input. The feedback path must still emit a valid allow
+// response with updatedInput.plan set — it's the load-bearing promise
+// that bypasses ExitPlanMode's native dialog.
+func TestE2E_Feedback_MalformedToolInput(t *testing.T) {
+	binPath := launcherPath(t)
+
+	home := t.TempDir()
+	plansDir := filepath.Join(home, ".claude", "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(plansDir, "e2e-plan.md")
+	if err := os.WriteFile(planPath, []byte("anchor here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	transcript := fmt.Sprintf(
+		`{"type":"attachment","attachment":{"type":"plan_mode","planFilePath":"%s","planExists":true}}`+"\n",
+		planPath,
+	)
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// tool_input is a JSON array, not an object. The hook must not crash
+	// and must still produce a correctly shaped allow+updatedInput response.
+	hookInput := fmt.Sprintf(
+		`{"session_id":"e2e-malformed","transcript_path":%q,"cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":["not","an","object"]}`,
+		transcriptPath,
+	)
+
+	t.Setenv("HOME", home)
+	t.Setenv("PLAN_REVIEWER_NO_BROWSER", "1")
+
+	_, port, stdoutBuf, done := runBinary(t, binPath, hookInput)
+	token := fetchCSRF(t, port)
+	submit(t, port, token, `{"action":"feedback","comments":[{"anchorText":"anchor","lineStart":1,"lineEnd":1,"body":"hm"}]}`)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("binary exited with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("binary did not exit within 5s")
+	}
+
+	var parsed struct {
+		HookSpecificOutput struct {
+			PermissionDecision string         `json:"permissionDecision"`
+			UpdatedInput       map[string]any `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(stdoutBuf.String()), &parsed); err != nil {
+		t.Fatalf("stdout is not JSON: %s", stdoutBuf.String())
+	}
+	if parsed.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("want allow, got %s (stdout: %s)", parsed.HookSpecificOutput.PermissionDecision, stdoutBuf.String())
+	}
+	if plan, _ := parsed.HookSpecificOutput.UpdatedInput["plan"].(string); !strings.Contains(plan, "FEEDBACK") {
+		t.Errorf("updatedInput.plan must carry FEEDBACK annotation even with malformed tool_input; got: %q", plan)
+	}
+}
+
 func TestE2E_Cancel_OnTabClose(t *testing.T) {
 	// Simulates the browser tab being closed: sendBeacon-style POST to
 	// /cancel with the CSRF token in the body. Binary should exit with an

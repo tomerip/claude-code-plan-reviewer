@@ -36,7 +36,7 @@ That's it. Next time Claude finishes a plan and calls `ExitPlanMode`, the review
    - Click TOC entries to jump to any section.
    - Select any span of text to attach a comment (⌘↩ to save, Esc to cancel).
 3. **[ Approve ]** → lets Claude proceed to its own approval dialog.
-4. **[ Send feedback ]** → inserts your comments as `> 💬 FEEDBACK: …` blockquotes in the plan file and tells Claude to revise.
+4. **[ Send feedback ]** → annotates the plan with `> 💬 FEEDBACK on "<anchor>": …` blockquotes and tells Claude to revise.
 
 ## Repo layout
 

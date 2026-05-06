@@ -12,19 +12,21 @@ ExitPlanMode                            browser
    ▼                                       │  http://127.0.0.1:<ephemeral>
 PreToolUse hook ── launch.sh ── binary ────┤
    ▲                             │         │
-   │  allow / deny + reason      │         ▼
-   │                             │   select text, comment,
-   └─────────────────────────────┤   click Approve | Send
+   │  allow (+ updatedInput      │         ▼
+   │  carrying annotated plan    │   select text, comment,
+   │  and additionalContext)     │   click Approve | Send
+   └─────────────────────────────┤
                                  ▼
-                        rewrite plan .md
-                        with `> 💬 FEEDBACK:`
+                       ExitPlanMode persists
+                       updatedInput.plan with
+                       `> 💬 FEEDBACK on "…":` annotations
 ```
 
 - `hooks/hooks.json` registers a `PreToolUse` matcher on `ExitPlanMode`.
 - `hooks/launch.sh` picks `bin/<os>-<arch>/plan-reviewer.gz`, decompresses it into `~/.cache/plan-reviewer/` on first use, execs it.
 - The binary reads the hook JSON payload from stdin, discovers the plan path from the session transcript (validated to be inside `~/.claude/plans/`), serves the review UI, and blocks until the user submits.
 - On approve: emits `permissionDecision: allow`. Claude Code's normal approval flow continues.
-- On feedback: edits the plan file in place, emits `permissionDecision: deny` with a message telling Claude to revise.
+- On feedback: emits `permissionDecision: allow` with `updatedInput.plan` set to the plan text annotated with `> 💬 FEEDBACK on "<anchor>":` blockquotes, plus `additionalContext` steering Claude to re-enter plan mode and address the annotations. The hook itself never writes to the plan file — ExitPlanMode persists `updatedInput.plan`, so there's exactly one writer and the plan's mtime stays in sync with Claude's read cache. `allow` + `updatedInput` also suppresses ExitPlanMode's native approve/reject dialog, so the user doesn't see an extra prompt after submitting feedback.
 
 ## Layout
 
@@ -60,7 +62,9 @@ Committed artifacts are only the gzipped binaries under `bin/<os>-<arch>/plan-re
 ## Security
 
 - Plan file path is constrained to `~/.claude/plans/*.md`; symlinks are resolved and must stay inside that directory.
-- The plan file is written with `O_NOFOLLOW`.
+- The hook never writes to the plan file. Annotated plan text is returned via `updatedInput.plan` and ExitPlanMode persists it, so the symlink-write surface doesn't exist.
+- Only the `plan` key is forwarded in `updatedInput`; any extra keys in the incoming `tool_input` (which is ultimately model-generated and could be influenced by prompt injection of the transcript) are dropped.
+- `/submit` has a 1 MiB body cap via `http.MaxBytesReader`.
 - Markdown link rendering uses a scheme allowlist (`http`, `https`, `mailto`, `#`, `/`, `./`, `../`); `javascript:`, `data:`, `vbscript:`, `file:` are stripped.
 - `POST /submit` requires a random CSRF token generated per server start and injected into the HTML.
 - `Origin` header is rejected when present and not equal to the server's own origin.
