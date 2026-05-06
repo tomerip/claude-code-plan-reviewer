@@ -186,10 +186,12 @@ func (r *renderer) parseBlockquote() {
 	content := strings.Join(body, "\n")
 	inner := renderInner(content)
 
-	// Detect feedback blockquotes and style them distinctly.
+	// Detect feedback blockquotes and style them distinctly. The header may
+	// carry an anchor snippet (`FEEDBACK on "...": body`), so we match the
+	// prefix up to the first space/colon rather than the full literal.
 	cls := ""
-	if strings.HasPrefix(strings.TrimSpace(content), "💬 FEEDBACK:") ||
-		strings.HasPrefix(strings.TrimSpace(content), "FEEDBACK:") {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "💬 FEEDBACK") || strings.HasPrefix(trimmed, "FEEDBACK") {
 		cls = ` class="pr-feedback"`
 	}
 	r.emitBlock(start, r.i-1, fmt.Sprintf("<blockquote%s>%s</blockquote>", cls, inner))

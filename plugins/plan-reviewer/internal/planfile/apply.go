@@ -5,7 +5,13 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
+
+// maxAnchorLen caps the anchor snippet in the FEEDBACK header. Long enough
+// to disambiguate which span the user highlighted; short enough to keep the
+// blockquote readable when someone highlights a whole paragraph.
+const maxAnchorLen = 160
 
 // Comment describes one piece of user feedback anchored to a span of the plan.
 type Comment struct {
@@ -99,8 +105,16 @@ func blockEnd(lines []string, start int) int {
 }
 
 func appendFeedback(lines []string, afterIdx int, body, anchor string) []string {
-	// Build the blockquote lines.
-	bqLines := []string{"> 💬 FEEDBACK: " + firstLine(body)}
+	// Build the blockquote lines. Include the highlighted anchor snippet so
+	// Claude can disambiguate which span the user was reacting to — anchor
+	// position alone is often ambiguous when feedback is terse ("why?",
+	// "unclear") or when the same phrasing appears in multiple places.
+	header := "> 💬 FEEDBACK"
+	if snippet := formatAnchorSnippet(anchor); snippet != "" {
+		header += " on " + snippet
+	}
+	header += ": " + firstLine(body)
+	bqLines := []string{header}
 	rest := remainingLines(body)
 	for _, l := range rest {
 		bqLines = append(bqLines, "> "+l)
@@ -123,6 +137,24 @@ func appendFeedback(lines []string, afterIdx int, body, anchor string) []string 
 	out = append(out, insert...)
 	out = append(out, lines[afterIdx+1:]...)
 	return out
+}
+
+// formatAnchorSnippet renders the highlighted text for inclusion in the
+// blockquote header. Collapses internal whitespace/newlines to single spaces,
+// truncates to maxAnchorLen runes with an ellipsis, and swaps double quotes
+// for single so the outer quoting doesn't collide with user content.
+func formatAnchorSnippet(anchor string) string {
+	anchor = strings.TrimSpace(anchor)
+	if anchor == "" {
+		return ""
+	}
+	anchor = strings.Join(strings.Fields(anchor), " ")
+	if utf8.RuneCountInString(anchor) > maxAnchorLen {
+		runes := []rune(anchor)
+		anchor = strings.TrimRight(string(runes[:maxAnchorLen]), " ") + "…"
+	}
+	anchor = strings.ReplaceAll(anchor, `"`, `'`)
+	return `"` + anchor + `"`
 }
 
 func firstLine(s string) string {

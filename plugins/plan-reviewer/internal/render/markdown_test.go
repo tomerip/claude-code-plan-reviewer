@@ -55,6 +55,15 @@ func TestRender_FeedbackBlockquote(t *testing.T) {
 	}
 }
 
+func TestRender_FeedbackBlockquote_WithAnchorSnippet(t *testing.T) {
+	// Headers may include the highlighted anchor in quotes —
+	// `FEEDBACK on "..."` — and still need the pr-feedback class.
+	r := Render(`> 💬 FEEDBACK on "some span": test`)
+	if !strings.Contains(r.HTML, `<blockquote class="pr-feedback">`) {
+		t.Errorf("feedback blockquote with anchor snippet should get pr-feedback class: %s", r.HTML)
+	}
+}
+
 func TestRender_UnorderedList(t *testing.T) {
 	r := Render("- one\n- two\n- three")
 	if !strings.Contains(r.HTML, "<ul>") || !strings.Contains(r.HTML, "<li>one</li>") {

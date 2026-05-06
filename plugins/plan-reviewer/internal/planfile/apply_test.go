@@ -27,11 +27,11 @@ func TestApplyFeedback_SingleAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "> 💬 FEEDBACK: why?") {
-		t.Errorf("feedback not inserted: %s", got)
+	if !strings.Contains(got, `> 💬 FEEDBACK on "first": why?`) {
+		t.Errorf("feedback not inserted with anchor snippet: %s", got)
 	}
 	// Feedback should come after the first paragraph, before the second.
-	fbIdx := strings.Index(got, "FEEDBACK:")
+	fbIdx := strings.Index(got, "FEEDBACK")
 	secondIdx := strings.Index(got, "second paragraph")
 	if fbIdx == -1 || secondIdx == -1 || fbIdx > secondIdx {
 		t.Errorf("feedback in wrong position:\n%s", got)
@@ -52,7 +52,11 @@ func TestApplyFeedback_MultipleAnchors_ReverseOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"FEEDBACK: A", "FEEDBACK: B", "FEEDBACK: C"} {
+	for _, want := range []string{
+		`FEEDBACK on "alpha": A`,
+		`FEEDBACK on "beta": B`,
+		`FEEDBACK on "gamma": C`,
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q: %s", want, got)
 		}
@@ -75,8 +79,11 @@ func TestApplyFeedback_AnchorNotFound_AppendsEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "FEEDBACK: orphan") {
-		t.Errorf("orphan comment not appended: %s", got)
+	// Anchor text is still included in the header even when we couldn't
+	// locate it in the plan — Claude should still see what the user
+	// highlighted in their browser.
+	if !strings.Contains(got, `FEEDBACK on "NOTEXIST": orphan`) {
+		t.Errorf("orphan comment not appended with anchor: %s", got)
 	}
 	if strings.Index(got, "only line") > strings.Index(got, "FEEDBACK") {
 		t.Errorf("orphan should be after original content: %s", got)
@@ -127,6 +134,75 @@ func TestApplyFeedback_DoesNotWriteToDisk(t *testing.T) {
 	}
 	if string(raw) != md {
 		t.Errorf("plan file content changed; ApplyFeedback must be read-only.\nwant: %q\ngot:  %q", md, string(raw))
+	}
+}
+
+func TestApplyFeedback_AnchorInHeader_MultilineCollapsed(t *testing.T) {
+	md := "para one\n\npara two\n"
+	path := writeTempPlan(t, md)
+	got, err := ApplyFeedback(path, []Comment{
+		{AnchorText: "multi\n  line  \n\n\tanchor", LineStart: 1, Body: "hm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Internal whitespace (newlines, tabs, double spaces) must collapse to
+	// single spaces so the blockquote header stays on one line.
+	if !strings.Contains(got, `FEEDBACK on "multi line anchor": hm`) {
+		t.Errorf("anchor whitespace not normalized:\n%s", got)
+	}
+}
+
+func TestApplyFeedback_AnchorInHeader_LongTruncated(t *testing.T) {
+	md := "whatever\n"
+	path := writeTempPlan(t, md)
+	long := strings.Repeat("a", 300)
+	got, err := ApplyFeedback(path, []Comment{
+		{AnchorText: long, LineStart: 1, Body: "x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("long anchor should be truncated with ellipsis:\n%s", got)
+	}
+	// The full 300-char anchor must not appear verbatim.
+	if strings.Contains(got, long) {
+		t.Errorf("untruncated anchor leaked into output:\n%s", got)
+	}
+}
+
+func TestApplyFeedback_AnchorInHeader_QuotesEscaped(t *testing.T) {
+	md := "whatever\n"
+	path := writeTempPlan(t, md)
+	got, err := ApplyFeedback(path, []Comment{
+		{AnchorText: `the "important" thing`, LineStart: 1, Body: "x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inner double quotes must be swapped for single so they don't terminate
+	// the snippet's outer quoting early.
+	if !strings.Contains(got, `FEEDBACK on "the 'important' thing": x`) {
+		t.Errorf("inner double quotes not swapped:\n%s", got)
+	}
+}
+
+func TestApplyFeedback_EmptyAnchor_NoSnippet(t *testing.T) {
+	md := "whatever\n"
+	path := writeTempPlan(t, md)
+	got, err := ApplyFeedback(path, []Comment{
+		{AnchorText: "", LineStart: 1, Body: "standalone"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No anchor → header is just "FEEDBACK: <body>", no `on "..."` segment.
+	if !strings.Contains(got, "FEEDBACK: standalone") {
+		t.Errorf("empty-anchor header missing:\n%s", got)
+	}
+	if strings.Contains(got, "FEEDBACK on") {
+		t.Errorf("empty anchor should not produce `on \"...\"` segment:\n%s", got)
 	}
 }
 

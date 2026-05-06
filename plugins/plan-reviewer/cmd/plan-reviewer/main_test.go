@@ -280,8 +280,8 @@ func TestE2E_Feedback(t *testing.T) {
 	// updatedInput.plan must carry the annotated plan — ExitPlanMode.call()
 	// writes it back to disk, so shipping the original plan here would wipe
 	// our FEEDBACK blockquotes.
-	if plan, _ := parsed.HookSpecificOutput.UpdatedInput["plan"].(string); !strings.Contains(plan, "FEEDBACK: why not flask") {
-		t.Errorf("updatedInput.plan must include FEEDBACK annotations (ExitPlanMode writes it back to disk); got: %q", plan)
+	if plan, _ := parsed.HookSpecificOutput.UpdatedInput["plan"].(string); !strings.Contains(plan, `FEEDBACK on "Fastapi": why not flask`) {
+		t.Errorf("updatedInput.plan must include FEEDBACK annotation with anchor snippet (ExitPlanMode writes it back to disk); got: %q", plan)
 	}
 
 	// The hook itself must NOT touch the plan file. ExitPlanMode.call() is
