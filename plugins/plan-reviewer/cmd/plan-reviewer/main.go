@@ -18,7 +18,7 @@ import (
 //go:embed web/*
 var assetsFS embed.FS
 
-const reviewTimeout = 10 * time.Minute
+const reviewTimeout = 2 * time.Hour
 
 func main() {
 	// Support `--help` without a hook payload.
